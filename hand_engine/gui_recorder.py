@@ -21,6 +21,8 @@ if os.path.exists(DATA_FILE):
         for label, seq in pickle.load(f):
             gesture_data[label].append(seq)
 
+
+i_frame = 1
 # === Mediapipe setup ===
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
@@ -153,7 +155,7 @@ cap = cv2.VideoCapture(0)
 
 
 def process_frame():
-    global sequence, recording
+    global sequence, recording, i_frame
 
     if not running:
         return
@@ -177,8 +179,9 @@ def process_frame():
                     sequence = sequence[-MAX_SEQ_LEN:]
 
     if recording:
-        cv2.putText(image, "Recording...", (10, 30),
+        cv2.putText(image, f"Recording: {i_frame}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        i_frame += 1
     else:
         cv2.putText(image, f"Gesture: {current_label or 'None'}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
@@ -192,10 +195,11 @@ def process_frame():
 
 # === Keyboard events (Tkinter handles keydown/up)
 def on_key(event):
-    global recording, sequence
+    global recording, sequence, i_frame
     if event.keysym.lower() == 'r' and not recording and current_label:
         print("🔴 Recording started")
         recording = True
+        i_frame = 1
         sequence = []
 
 

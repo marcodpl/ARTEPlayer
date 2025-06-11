@@ -25,6 +25,9 @@ if __name__ == "__main__":
     with open("data/gesture_sequences.pkl", "rb") as f:
         data = pickle.load(f)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     sequences = [np.array(seq) for _, seq in data]
     labels = [label for label, _ in data]
 
@@ -52,13 +55,17 @@ if __name__ == "__main__":
     # Convert to PyTorch tensors
     X_train = torch.tensor(X_train, dtype=torch.float32)
     X_test = torch.tensor(X_test, dtype=torch.float32)
+    X_train = X_train.to(device)
+    X_test = X_test.to(device)
+    y_train = y_train.to(device)
+    y_test = y_test.to(device)
 
     model = GestureLSTM(output_size=len(le.classes_))
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     # Training loop
-    EPOCHS = 40
+    EPOCHS = 60
     for epoch in range(EPOCHS):
         model.train()
         optimizer.zero_grad()
