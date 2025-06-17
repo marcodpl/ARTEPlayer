@@ -176,7 +176,7 @@ def process_frame():
                 flat = flatten_landmarks(landmarks)
                 sequence.append(np.array(flat))
                 if len(sequence) > MAX_SEQ_LEN:
-                    sequence = sequence[-MAX_SEQ_LEN:]
+                    sequence = sequence[:MAX_SEQ_LEN]
 
     if recording:
         cv2.putText(image, f"Recording: {i_frame}", (10, 30),

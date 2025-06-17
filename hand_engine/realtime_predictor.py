@@ -4,22 +4,21 @@ import numpy as np
 import torch
 import pickle
 from collections import deque
-from train_model import GestureLSTM  # Import your model class
+from train_model import GestureLSTM
+from train_model import GestureTransformer # Import your model class
 import warnings
 from sys import platform
+from helpers.prediction_handler import PredictionHandler
 warnings.filterwarnings("ignore", category=UserWarning)
-if platform == "linux" or platform == "linux2":
-    import volume_control_linux as vc
-elif platform == "win32":
-    import media_control_windows as media
 
-
+MODEL_TYPE = "transformer"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # === Load model and label encoder ===
 with open("data/label_encoder.pkl", "rb") as f:
     label_encoder = pickle.load(f)
-model = GestureLSTM(output_size=len(label_encoder.classes_))
-model.load_state_dict(torch.load("data/gesture_lstm.pt", map_location=device))
+model = GestureLSTM(output_size=len(label_encoder.classes_)) if MODEL_TYPE == "lstm" else GestureTransformer(output_size=len(label_encoder.classes_))
+model_path = "data/gesture_lstm.pt" if MODEL_TYPE == "lstm" else "data/gesture_model.pt"
+model.load_state_dict(torch.load(model_path, map_location=device))
 model.eval()
 
 # === Mediapipe hand tracking ===
@@ -30,13 +29,19 @@ hands = mp_hands.Hands(static_image_mode=False,
                        min_tracking_confidence=0.7)
 mp_drawing = mp.solutions.drawing_utils
 
+
+# === Prediction handler ===
+handle_prediction = PredictionHandler()
+
+
 # === Parameters ===
 SEQ_LEN = 45
 INPUT_SIZE = 42
-MIN_MOV_MAG = 2.5
+MIN_MOV_MAG = 5
 sequence = deque(maxlen=SEQ_LEN)
 current_prediction = "Waiting..."
 last_prediction = "Waiting..."
+
 
 # === Helper functions ===
 def normalize_landmarks(landmarks):
@@ -52,20 +57,7 @@ def flatten_landmarks(landmarks):
 def motion_magnitude(seq):
     diffs = np.diff(seq, axis=0)
     return np.sum(np.linalg.norm(diffs, axis=1))
-
-
-# === Predicion act-upon function ===
-def handle_prediction():
-    global current_prediction, last_prediction
-    match current_prediction:
-        case "Waiting...":
-            pass
-        case "idle":
-            pass
-        case "hand_raise":
-            pass
   
-
 
 # === Webcam loop ===
 cap = cv2.VideoCapture(0)
@@ -94,7 +86,7 @@ while cap.isOpened():
                     output = model(input_tensor)
                     pred_index = torch.argmax(output, dim=1).item()
                     current_prediction = label_encoder.inverse_transform([pred_index])[0]
-                    handle_prediction()
+                    handle_prediction(current_prediction)
             else:
                 current_prediction = "idle"
     else:
