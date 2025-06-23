@@ -21,7 +21,8 @@ MAX_EPOCHS = 100
 
 # === Early stopping class ===
 class EarlyStopping:
-    def __init__(self, patience=5, min_delta=0.001, save_path="data/gesture_model.pt"):
+    def __init__(self, patience=5, min_delta=0.001, stop_on_full_accuracy = True, save_path="data/gesture_model.pt"):
+        self.stop_on_full_accuracy = stop_on_full_accuracy
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -29,7 +30,12 @@ class EarlyStopping:
         self.early_stop = False
         self.save_path = save_path
 
-    def __call__(self, val_loss, lmodel):
+    def __call__(self, val_loss, acc, lmodel):
+        if self.stop_on_full_accuracy and acc >= (1-10e-5):
+            torch.save(lmodel.state_dict(), self.save_path)
+            print("Model reached 100% accuracy. Stopping.")
+            self.early_stop = True
+            return
         if self.best_loss is None or val_loss < self.best_loss - self.min_delta:
             self.best_loss = val_loss
             self.counter = 0
@@ -93,9 +99,9 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    sequences = [np.array(seq) for _, seq in data]
-    labels = [label if isinstance(label, str) else label[0] for label, _ in data]
-    early_stopping = EarlyStopping(patience=5, min_delta=0.001)
+    sequences = [np.array(seq) for seq, _ in data]
+    labels = [label if isinstance(label, str) else label[0] for _, label in data]
+    early_stopping = EarlyStopping(patience=5, min_delta=0.001, stop_on_full_accuracy = True)
 
     def pad_sequence(seq):
         if len(seq) < MAX_SEQ_LEN:
@@ -133,13 +139,13 @@ if __name__ == "__main__":
         optimizer.step()
 
         model.eval()
-        with torch.no_grad():
+        with torch.inference_mode():
             test_outputs = model(X_test)
             pred = torch.argmax(test_outputs, dim=1)
             acc = (pred == y_test).float().mean()
 
         print(f"Epoch {epoch+1}/{MAX_EPOCHS} | Loss: {loss.item():.4f} | Val Acc: {acc:.2f}")
-        early_stopping(loss.item(), model)
+        early_stopping(loss.item(), acc, model)
         if early_stopping.early_stop:
             print(f"⏹️ Early stopping at epoch {epoch+1}")
             break

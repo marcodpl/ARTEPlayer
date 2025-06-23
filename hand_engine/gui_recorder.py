@@ -18,7 +18,7 @@ MAX_SEQ_LEN = 45
 gesture_data = defaultdict(list)
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "rb") as f:
-        for label, seq in pickle.load(f):
+        for seq, label in pickle.load(f):
             gesture_data[label].append(seq)
 
 
@@ -44,7 +44,7 @@ def flatten_landmarks(landmarks):
 
 
 def save_data():
-    all_data = [(label, seq) for label, sequences in gesture_data.items() for seq in sequences]
+    all_data = [(seq, label) for sequences, label in gesture_data.items() for seq in sequences]
     with open(DATA_FILE, "wb") as f:
         pickle.dump(all_data, f)
 
@@ -58,7 +58,7 @@ def show_stats():
     counts = []
     lengths = []
 
-    for label, sequences in gesture_data.items():
+    for sequences, label in gesture_data.items():
         labels.append(label)
         counts.append(len(sequences))
         seq_lengths = [len(seq) for seq in sequences]

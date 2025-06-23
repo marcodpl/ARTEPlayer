@@ -9,6 +9,7 @@ from train_model import GestureTransformer # Import your model class
 import warnings
 from sys import platform
 from helpers.prediction_handler import PredictionHandler
+from helpers.conflict_resolver import ConflictResolver
 warnings.filterwarnings("ignore", category=UserWarning)
 
 MODEL_TYPE = "transformer"
@@ -38,9 +39,12 @@ handle_prediction = PredictionHandler()
 SEQ_LEN = 45
 INPUT_SIZE = 42
 MIN_MOV_MAG = 5
+MIN_CONFIDENCE = 0.9
 sequence = deque(maxlen=SEQ_LEN)
 current_prediction = "Waiting..."
 last_prediction = "Waiting..."
+handler = PredictionHandler()
+resolver = ConflictResolver()
 
 
 # === Helper functions ===
@@ -77,16 +81,22 @@ while cap.isOpened():
             norm = normalize_landmarks(landmarks)
             flattened = flatten_landmarks(norm)
             sequence.append(flattened)
+            handedness = "right"
 
         if len(sequence) == SEQ_LEN:
             mag = motion_magnitude(np.array(sequence))
             if mag > MIN_MOV_MAG:  # sort out minimal movement as idle
-                input_tensor = torch.tensor([sequence], dtype=torch.float32).to(device)
-                with torch.no_grad():
+                input_tensor = torch.tensor([sequence], dtype=torch.float32).to(device)  # define input tensor and move to GPU if available
+                with torch.inference_mode():
                     output = model(input_tensor)
-                    pred_index = torch.argmax(output, dim=1).item()
-                    current_prediction = label_encoder.inverse_transform([pred_index])[0]
-                    handle_prediction(current_prediction)
+                    probs = torch.softmax(output, dim=1)
+                    confidence, pred_class = torch.max(probs, dim=1)
+                    if confidence >= MIN_CONFIDENCE:
+                        pred_index = torch.argmax(output, dim=1).item()  # get maximum tensor item
+                        current_prediction = label_encoder.inverse_transform([pred_index])[0]  # translate value to label via encoder
+                        if resolver.should_be_resolved(current_prediction):  # check if prediction is in the "troublesome" list
+                            current_prediction = resolver.generic_resolve(current_prediction, flattened, handedness)  # resolve potential mismatches
+                        handler.pred = current_prediction  # set current prediction to PredictionHandler, triggers PredictionHandler.on_pred_update()
             else:
                 current_prediction = "idle"
     else:
