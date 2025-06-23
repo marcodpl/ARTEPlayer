@@ -1,0 +1,5 @@
+Instructions on phone coords txt file.
+Saves like this:
+NAME;MAC_ADDR;DATE_ADDED;IS_DEFAULT
+
+Only one phone can be default. If more then one, raises an AssertationError.

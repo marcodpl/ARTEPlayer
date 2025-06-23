@@ -1,0 +1,8 @@
+Engine for bluetooth communication with a std phone, media player etc.
+
+Tasks:
+
+ - Auto-connect to predefined phone. This will be done via a LINUX service, see post for information.
+ - Set a "media playing" mode- listen to input stream, then relay to AUX.
+ - Have a media control- play, pause, control volume, and relay to phone.
+ - 
