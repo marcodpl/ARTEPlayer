@@ -1,5 +1,5 @@
 from new_functions import Functions as fnct
-
+import builtins
 if __name__ == "__main__":
     f = fnct()
     while True:
@@ -14,4 +14,3 @@ if __name__ == "__main__":
         if "cmd:" in input1:
             cmd = input1.split(":")[1]
             f.send_media_command(cmd)
-            exit()

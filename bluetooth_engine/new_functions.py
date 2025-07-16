@@ -51,7 +51,7 @@ class BtPhone(object):
 class Functions(object):
     def __init__(self):
         print("[INIT]: Initializing functions...")
-        with open("data/default_mac.txt", "r+") as f:
+        with open(os.getcwd()+"/data/default_mac.txt", "r+") as f:
             default_phone_mac = f.read().strip()
 
         self.default_phone_mac = self._normalize_mac(default_phone_mac)
@@ -387,7 +387,9 @@ class Functions(object):
                                                      sink_info.get('media_name',
                                                                    f"Unknown Device ({current_connected_mac})")
                                         self._dynamic_update_known_phones_list(phone_name, current_connected_mac)
-                                        self.default_target_mac_address = self._normalize_mac(current_connected_mac)
+                                        if len(self.phones) <= 1:
+                                            self.make_default(current_connected_mac)
+                                            print(f"[Bluetooth] Default phone set to {current_connected_mac}.")
                                         connected_mac_result = current_connected_mac
                                         break
 

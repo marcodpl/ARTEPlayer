@@ -1,32 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="braga@192.168.1.67:22 password (4)" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="braga@192.168.1.67:22 password">
         <serverdata>
           <mappings>
-            <mapping deploy="/tmp/pycharm_project_677" local="$PROJECT_DIR$" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="braga@192.168.1.67:22 password (2)">
-        <serverdata>
-          <mappings>
-            <mapping deploy="/tmp/pycharm_project_152" local="$PROJECT_DIR$" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="braga@192.168.1.67:22 password (3)">
-        <serverdata>
-          <mappings>
-            <mapping deploy="/tmp/pycharm_project_163" local="$PROJECT_DIR$" />
-          </mappings>
-        </serverdata>
-      </paths>
-      <paths name="braga@192.168.1.67:22 password (4)">
-        <serverdata>
-          <mappings>
-            <mapping deploy="/tmp/pycharm_project_131" local="$PROJECT_DIR$" />
+            <mapping deploy="/tmp/pycharm_project_815" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
