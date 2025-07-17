@@ -1,181 +1,117 @@
-import io
-import stat
-import operator
-import os
 import subprocess
-import sys
-from datetime import datetime as dt
-import threading
 import time
-import pexpect
 import re
+import os
+from datetime import datetime
+import requests
+
+BLUETOOTH_SET_REMOTE_VOLUME_IS_COMPLETED = False
 
 
-class MoreThanOneDefaultPhoneError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
+"""
+Bluetooth functionality implementation for ARTEPlayer.
+Phones are represented by BtPhone objects. They hold name, MAC address, and date added, as well as a flag indicating whether
+it is the default phone.
+Default phone: represents the phone that is first focused when the app starts. Also, it is used as default phone
+when focused phone is disconnected or removed.
+ - it is stored inside data/default_mac.txt
+Focused phone: represents the phone that is currently focused. All bluetooth operations which require a target phone
+are performed on this phone. It is not stored and is session - dependent. It is set to the default phone when the app
+starts.
+ - it is set to the default phone when focused phone is disconnected or removed.
+Phones: represents a list of phones that are known to the app.
+ - they are loaded from the system when the app starts.
+ - they are updated when a new phone is paired or connected.
+ - they are updated when a phone is disconnected or removed.
+ - they are updated when a phone is renamed.
+ - they are updated when a phone is removed from the system.
+"""
 
 
-class BtPhone:
-    def __init__(self, name, mac, date, is_default: bool = False):
+# DEBUG
+def checked(func: callable):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            print(f"[ERROR]: {e}")
+            return None
+    return wrapper
+
+
+class BtPhone(object):
+    def __init__(self, name, mac, date_added=None, is_default=False):
         self.name = name
-        self.mac = mac  # Format: XX:XX:XX:XX:XX:XX
-        self.date = date
+        self.mac = mac.replace(':', '').upper()
+        self.date_added = date_added if date_added else datetime.now()
         self.is_default = is_default
+        self.__doc__ = self.__repr__.__doc__
 
     def __repr__(self):
-        # A friendly representation for printing the object
         return (f"BtPhone(name='{self.name}', mac='{self.mac}', "
-                f"added='{self.date.strftime('%Y-%m-%d %H:%M:%S')}', default={self.is_default})")
+                f"added='{self.date_added.strftime('%Y-%m-%d %H:%M:%S')}', default={self.is_default})")
+
+    def to_dict(self):
+        return {
+            'name'      : self.name,
+            'mac'       : self.mac,
+            'date_added': self.date_added.isoformat(),
+            'is_default': self.is_default
+        }
 
 
-"""
-ALL OPERATIONS ARE PERFORMED ON FOCUSED PHONE.
-FOCUSED PHONE is, at start, the default phone saved in file.
-Operations as add_phone and similar are exempt.
-FOCUSED PHONE DIFFERS FROM DEFAULT PHONE. TO CHANGE DEFAULT PHONE USE self.set_default_phone()
-FOCUSED PHONE SHOULD ALWAYS BE CONNECTED PHONE IF CONNECTED PHONE IS PRESENT!
-Focused phone changes:
- - at start (default phone)
- - via focus_phone_via_name/mac()
- - via unfocus_phone() [returns to default phone]
- - via delete_phone() [ deletes focused phone, returns to default phone] 
- 
-Where information is kept:
- - focused phone: in focused_phone attribute
- - default phone: in is_default attribute of BtPhone instances, stored as a list inside self.phones. Moreover, in data/phone_coords.txt.
-"""
+class Functions(object):
+    def __init__(self):
+        print("[INIT]: Initializing functions...")
+        with open(os.getcwd()+"/data/default_mac.txt", "r+") as f:
+            default_phone_mac = f.read().strip()
 
+        self.default_phone_mac = self._normalize_mac(default_phone_mac)
+        self.phones = []
+        print(
+            f"[INIT]: Default Target MAC: {self.default_phone_mac if self.default_phone_mac else 'Not specified'}")
 
-class Functions:
+        self._load_known_phones_from_system()
+        print("[INIT]: Known phones loaded from system.")
+        self._check_default_phone_registration()
+        print("[INIT]: Default phone integrity checked.")
+        self.focused_phone = next((phont for phont in self.phones if phont.is_default), None)
+        print(f"[INIT]: Focused phone: {self.focused_phone.name if self.focused_phone else 'None'}")
+        print("[INIT][END]: Functions initialized.")
+
+    @staticmethod
+    def _normalize_mac(mac: str):
+        if mac:
+            mac = mac.replace('_','')
+            return mac.replace(':', '').upper()
+        return None
+
+    def _btctlformat(self, mac):
+        """
+        Returns a mac address in the format used by bluetoothctl.
+        :param mac: mac to be converted
+        :return: bluetoothctl formatted mac address
+        """
+        normed_mac = self._normalize_mac(mac)
+        if normed_mac:
+            return normed_mac[:2] + ":" + normed_mac[2:4] + ":" + normed_mac[4:6] + ":" + normed_mac[6:8] + ":" + normed_mac[8:10] + ":" + normed_mac[10:12]
+        return None
+
+    def _bluezformat(self, mac):
+        normed_mac = self._normalize_mac(mac)
+        if normed_mac:
+            return normed_mac[:2] + "_" + normed_mac[2:4] + "_" + normed_mac[4:6] + "_" + normed_mac[6:8] + "_" + normed_mac[8:10] + "_" + normed_mac[10:12]
+        return None
+
     @staticmethod
     def _run_command(command):
-        """
-        Executes a shell command and returns its stdout.
-        Raises an exception on error for better error handling in methods.
-        """
         try:
             result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Command failed: {e.cmd}") from e
+            raise RuntimeError(f"[RUNCMD]: Command failed: {e.cmd}") from e
         except FileNotFoundError:
-            raise FileNotFoundError(f"Command not found: {command.split()[0]}")
-
-    def __init__(self):
-        """
-        Reads all phones listed in data/phone_coords.txt.
-        NOTE: DOES NOT CHECK FOR DEFAULT PHONE UNICITY. CHECK FILE INTEGRITY (could lead to errors)
-        Focuses phone on default phone. Will be None if no default phone exists.
-        """
-        self.phones: list[BtPhone] = []
-        self.file_path = "data/phone_coords.txt"
-        if os.path.exists(self.file_path):
-            with open(self.file_path, "r") as f:
-                for line in f:
-                    print(str(line))
-                    name, mac, date, is_default = line.strip().split(";")
-
-                    self.phones.append(BtPhone(name, mac, date, is_default.lower() == "true"))
-        self.focused_phone: BtPhone = self.get_default_phone()
-
-    def get_default_phone(self):
-        """
-        Returns default phone.
-        :return: default BtPhone instance
-        """
-        return next((p for p in self.phones if p.is_default), None)
-
-    def set_default_phone(self):
-        """
-        Sets default phone to focused phone. Will be saved immediately. Prevents multiple default phones from existing.
-        """
-        for p in self.phones:
-            p.is_default = (p.mac == self.focused_phone.mac)
-        self.save_phones()
-
-    def focus_phone_via_name(self, name: str):
-        """
-        Focuses a phone from self.phones list, searching via provided name.
-        :param name: phone search criteria.
-        """
-        self.focused_phone = next((p for p in self.phones if p.name == name), None)
-
-    def focus_phone_via_mac(self, mac: str):
-        """
-        Focuses a phone from self.phones list, searching via provided mac (physical) address.
-        :param mac: phone search criteria.
-        """
-        self.focused_phone = next((p for p in self.phones if p.mac == mac), None)
-
-    def unfocus_phone(self):
-        """
-        Focuses default phone. Prevents focused phone being empty (as long as a default phone exists).
-        """
-        self.focused_phone = self.get_default_phone()
-
-    def save_phones(self):
-        """
-        Dumps all phones in self.phones list to data/phone_coords.txt.
-        Called automatically when a phone is added, removed, or paired client-side.
-        Overwrite mode means it can be called multiple times without overwriting issues.
-        """
-        with open(self.file_path, "w") as f:
-            for phone in self.phones:
-                f.write(f"{phone.name};{phone.mac};{phone.date};{phone.is_default}\n")
-
-    def _add_phone_to_phones(self, name, mac, date, set_default=False):
-        """
-        Manually adds a BtPhone instance to self.phones list. No confirmation of data is provided.
-        Shouldn't be used alone: connections should come client-wise (from the phone). No pairing is provided. No trusting is provided.
-        :param name: phone name
-        :param mac: phone mac address
-        :param date: date phone was added
-        :param set_default: is phone default (overrides current default phone)
-        """
-        self.phones.append(BtPhone(name, mac, date, set_default))
-        if set_default:
-            for p in self.phones:
-                p.is_default = (p.mac == mac)
-        self.save_phones()
-
-    def delete_phone(self):
-        """
-        Deletes focused phone. Reverts focused phone to default phone.
-        """
-        self.phones = [p for p in self.phones if p.mac != self.focused_phone.mac]
-        self.focused_phone = self.get_default_phone()
-        self.save_phones()
-        # TODO: IF DELETED PHONE IS DEFAULT PHONE, CHOOSE ANOTHER TO BE DEFAULT.
-
-    def pair_and_trust_phone(self):
-        """
-        Pairs and trusts focused Bluetooth phone using bluetoothctl.
-        """
-        mac = self.focused_phone.mac
-        print(f"📲 Pairing with {mac}...")
-        commands = f"""
-            power on
-            agent on
-            default-agent
-            pair {mac}
-            trust {mac}
-            quit
-        """
-        subprocess.run(['bluetoothctl'], input=commands.encode(), stdout=subprocess.PIPE)
-        print("✅ Paired and trusted.")
-
-    def connect_to_phone(self):
-        """
-        Connects to focused Bluetooth phone and enables audio routing to AUX.
-        """
-        mac = self.focused_phone.mac
-        print(f"🔗 Connecting to {mac}...")
-        os.system("pulseaudio --start")
-        os.system("pactl load-module module-bluetooth-discover")
-        os.system(f"bluetoothctl connect {mac}")
-        self.set_audio_output_to_aux()
-        print("🔊 Connected and audio routed to AUX.")
+            raise FileNotFoundError(f"[RUNCMD]: Command not found: {command.split()[0]}")
 
     @staticmethod
     def set_audio_output_to_aux():
@@ -183,50 +119,252 @@ class Functions:
         Forces audio to play through the Raspberry Pi 3.5mm jack.
         """
         os.system(" amixer cset numid=3 1")
-        print("🔈 Output set to 3.5mm AUX")
+        print("[AUDIO]: Output set to 3.5mm AUX")
 
-    def send_media_command(self, command: str):
+    @checked
+    def get_bluetooth_sink_input_info(self, mac=None):
         """
-        Sends a media control command to focused phone (play, pause, next, previous).
+        Obtains information about the active Bluetooth A2DP sink input.
+        :return: JSON object with information about the active sink input, or None if no active sink input is found
         """
-        valid_cmds = {"play", "pause", "next", "previous"}
-        if command.lower() not in valid_cmds:
-            print(f"⚠️ Invalid command: {command}")
-            return
-
-        mac_dbus = self.focused_phone.mac.replace(":", "_")
-        os.system(
-            f"dbus-send --system --dest=org.bluez --print-reply "
-            f"/org/bluez/hci0/dev_{mac_dbus}/player0 "
-            f"org.bluez.MediaPlayer1.{command.capitalize()} "
-        )
-        print(f"🎵 Sent '{command}' command to {mac_dbus}")
-
-    @staticmethod
-    def get_device_name(mac):
-        """
-        Queries the device name via bluetoothctl.
-        """
+        current_target_mac = mac if mac else self.focused_phone.mac if self.focused_phone else None
         try:
-            result = subprocess.run(["bluetoothctl", "info", mac], capture_output=True, text=True)
-            for line in result.stdout.splitlines():
-                if "Name:" in line:
-                    return line.split("Name:")[1].strip()
-        except Exception as e:
-            print(f"⚠️ Failed to get name for {mac}: {e}")
-        return "Unknown"
+            output = self._run_command("pactl list sink-inputs")
+        except RuntimeError:
+            return None
+
+        sink_inputs = re.split(r'Sink Input #(\d+)', output)
+
+        for i in range(1, len(sink_inputs), 2):
+            input_id = int(sink_inputs[i])
+            block = sink_inputs[i + 1]
+
+            if "api.bluez5.profile = \"a2dp-source\"" in block:
+                mac_match = re.search(r'api\.bluez5\.address = "([0-9A-Fa-f:]+)"', block)
+                if mac_match:
+                    stream_mac = self._normalize_mac(mac_match.group(1))
+                    print(f"debug {stream_mac}, {current_target_mac}")
+                    if current_target_mac and stream_mac != current_target_mac:
+                        continue
+
+                    media_name_match = re.search(r'media\.name = "([^"]+)"', block)
+                    media_name = media_name_match.group(1) if media_name_match else "Unknown"
+
+                    sink_id_match = re.search(r'Sink: (\d+)', block)
+                    current_sink_id = int(sink_id_match.group(1)) if sink_id_match else -1
+
+                    return {
+                        "id"             : input_id,
+                        "mac_address"    : mac_match.group(1),
+                        "media_name"     : media_name,
+                        "current_sink_id": current_sink_id,
+                        "raw_info"       : block
+                    }
+        return f"No active Bluetooth stream found for {current_target_mac}"
+
+    @checked
+    def get_analog_sink_id(self):
+        try:
+            output = self._run_command("pactl list sinks short")
+        except RuntimeError:
+            return None
+
+        for line in output.splitlines():
+            if "alsa_output.platform-fe00b840.mailbox.stereo-fallback" in line or \
+                    "analog-stereo" in line:
+                return int(line.split()[0])
+        return None
+
+    @checked
+    def make_default(self, mac):
+        self.default_phone_mac = self._normalize_mac(mac)
+        self._check_default_phone_registration(save_changes=True)
+
+    @checked
+    def set_bluetooth_sink_volume(self, percentage, input_id=None):
+        if not (0 <= percentage <= 100):
+            print("Volume percentage must be between 0 and 100.")
+            return False
+
+        target_input_id = input_id
+        if target_input_id is None:
+            info = self.get_bluetooth_sink_input_info()
+            if info:
+                target_input_id = info['id']
+            else:
+                print("No active Bluetooth stream found to set volume for.")
+                return False
+
+        command = f"pactl set-sink-input-volume {target_input_id} {percentage}%"
+        try:
+            self._run_command(command)
+            print(f"Bluetooth stream {target_input_id} volume set to {percentage}%.")
+            return True
+        except RuntimeError:
+            return False
+
+    @checked
+    def set_master_volume(self, percentage):
+        if not (0 <= percentage <= 100):
+            print("Volume percentage must be between 0 and 100.")
+            return False
+        command = f"amixer sset Master {percentage}%"
+        try:
+            self._run_command(command)
+            print(f"Master volume set to {percentage}%.")
+            return True
+        except RuntimeError:
+            return False
+
+    def disconnect_bluetooth_device(self):
+        current_mac = self.focused_phone.mac if self.focused_phone else None
+        current_mac = self._btctlformat(current_mac)
+        if not current_mac:
+            print("Error: No target MAC address specified for disconnect_bluetooth_device.")
+            return False
+
+        print(f"Attempting to disconnect {current_mac}...")
+        command = f"bluetoothctl disconnect {current_mac}"
+        try:
+            result = self._run_command(command)
+            if "Successful disconnected" in result or "Failed to disconnect" not in result:
+                print(f"Successfully sent disconnect command for {current_mac}.")
+                self.focused_phone = next((phont for phont in self.phones if phont.is_default), None)
+                return True
+            else:
+                print(f"Failed to disconnect {current_mac}. Result: {result}")
+                return False
+        except RuntimeError:
+            print(f"Error while trying to disconnect {current_mac}.")
+            return False
+
+    def connect_bluetooth_device(self):
+        current_mac = self.focused_phone.mac if self.focused_phone else None
+        current_mac = self._btctlformat(current_mac)
+        if not current_mac:
+            print("Error: No target MAC address specified for connect_bluetooth_device.")
+            return False
+
+        print(f"Attempting to connect {current_mac}...")
+        command = f"bluetoothctl connect {current_mac}"
+        try:
+            result = self._run_command(command)
+            if "Connection successful" in result or "Failed to connect" not in result:
+                print(f"Successfully sent connect command for {current_mac}.")
+                return True
+            else:
+                print(f"Failed to connect {current_mac}. Result: {result}")
+                return False
+        except RuntimeError:
+            print(f"Error while trying to connect {current_mac}.")
+            return False
+
+    @checked
+    def is_bluetooth_connected(self):
+        current_mac = self.focused_phone.mac if self.focused_phone else None
+        current_mac = self._btctlformat(current_mac)
+        print(f"Checking if {current_mac} is connected...")
+        if not current_mac:
+            print("Error: No target MAC address specified for is_bluetooth_connected.")
+            return False
+
+        try:
+            info_output = self._run_command(f"bluetoothctl info {current_mac}")
+            # Check for "Connected: yes" or "State: active" in bluetoothctl info
+            if "Connected: yes" not in info_output and "State: active" not in info_output:
+                return False
+        except RuntimeError:
+            return False
+
+        sink_info = self.get_bluetooth_sink_input_info()
+        return sink_info is not None
+
+    @checked
+    def _get_device_name_from_bluetoothctl_info(self, mac_address):
+        try:
+            btmac = self._btctlformat(mac_address)
+            output = self._run_command(f"bluetoothctl info {btmac}")
+            name_match = re.search(r'Name: (.+)', output)
+            if name_match:
+                return name_match.group(1).strip()
+        except RuntimeError:
+            pass
+        return None
+
+    @checked
+    def _load_known_phones_from_system(self):
+        """
+        Populates the known_phones list by querying bluetoothctl for paired devices.
+        """
+        print("[Bluetooth] Loading known phones from system...")
+        self.phones = []
+        try:
+            # Get list of paired devices
+            paired_devices_output = self._run_command("bluetoothctl devices Paired")
+
+            for line in paired_devices_output.splitlines():
+                match = re.match(r'Device ([0-9A-Fa-f:]+) (.+)', line)
+                if match:
+                    mac = match.group(1)
+                    name = match.group(2).strip()
+                    print(f"[Bluetooth] Found paired device: n:{name} ({mac})")
+                    phone1 = BtPhone(name, mac, datetime.now(), False)
+                    self.phones.append(phone1)
+                elif "No devices paired" in line:
+                    print("[Bluetooth] No devices currently paired on the system.")
+
+        except RuntimeError as e:
+            print(f"[Bluetooth] Could not load known phones from system: {e}")
+        except FileNotFoundError:
+            print("[Bluetooth] bluetoothctl command not found. Cannot load known phones.")
+        print(f"[Bluetooth] Known phones loaded. Total: {len(self.phones)}")
+
+    @checked
+    def _dynamic_update_known_phones_list(self, name, mac):
+        """
+        Adds a new phone to known_phones or updates an existing one.
+        """
+        normalized_mac = self._normalize_mac(mac)
+
+        # Check if phone already exists in our list
+        found_phone = next((phone for phone in self.phones if phone.mac == normalized_mac), None)
+
+        if found_phone:
+            found_phone.name = name  # Update name in case it changed on the device
+            found_phone.date_added = datetime.now()  # Update last connected time
+            print(f"[Bluetooth] Updated known phone entry: {found_phone}")
+        else:
+            # Add new phone
+            new_phone = BtPhone(name, mac, datetime.now(), False)
+            self.phones.append(new_phone)
+            print(f"[Bluetooth] Added new phone to known list: {new_phone}")
+
+    @checked
+    def _save_default(self):
+        with open("data/default_mac.txt", "w") as f:
+            f.write(self.default_phone_mac)
+
+    def _check_default_phone_registration(self, save_changes=True):
+        print("[CHKDEF]: Checking default phone integrity...")
+        if len(self.phones) == 0:
+            print("[CHKDEF]: self.phones is empty. Cannot check default phone integrity.")
+            return False
+        def_phone = next((phone2 for phone2 in self.phones if self._normalize_mac(phone2.mac) == self.default_phone_mac), None)
+        if not def_phone:
+            print("[CHKDEF]: Default phone not found in self.phones. Updating default phone (first in list).")
+            self.default_phone_mac = self.phones[0].mac
+            def_phone = self.phones[0]
+            if save_changes:
+                self._save_default()
+        else:
+            print("[CHKDEF]: Default phone found in self.phones.")
+        for phone3 in self.phones:
+            phone3.is_default = phone3.mac == def_phone.mac
+        return True
 
     def make_discoverable_and_listen(self, timeout=180):
-        """
-        Makes the Pi discoverable and pairable, and waits for a Bluetooth device
-        to connect and stream A2DP audio.
-        Automatically handles pairing and trust for new devices.
-
-        Returns the MAC address (string) of the successfully connected and
-        streaming device on success, or None on timeout/failure.
-        """
         try:
-            import pexpect  # Imports pexpect, needed for command handling.
+            import pexpect
             if not os.path.exists("/usr/bin/bluetoothctl"):
                 raise FileNotFoundError("bluetoothctl not found. Ensure BlueZ is installed.")
         except ImportError:
@@ -241,35 +379,83 @@ class Functions:
         print("Please initiate pairing/connection from your Bluetooth device.")
 
         child = None
-        connected_mac_result = None  # This variable will hold the MAC on success
-        newly_paired_mac = None  # This variable holds the pairing MAC.
+        connected_mac_result = None
+        newly_paired_mac = None  # Track newly paired device to trust it
+        start_time = time.time()
 
         try:
-            # Spawn bluetoothctl process
-            child = pexpect.spawn('bluetoothctl', encoding='utf-8', timeout=timeout)
+            child = pexpect.spawn('bluetoothctl', encoding='utf-8', timeout=5)
             child.sendline('power on')
             child.sendline('discoverable on')
             child.sendline('pairable on')
-            child.sendline('agent on')  # Use the default agent for prompts
+            child.sendline('agent on')
             child.sendline('default-agent')
 
-            # Flush initial output and wait for the prompt
             child.expect('bluetooth')
             print("bluetoothctl process started. Waiting for patterns...")
 
-            # Main loop to listen for events
-            while True:
-                i = child.expect([
-                    r'\[agent\] Confirm passkey (\d+) \(yes/no\):',
-                    r'\[agent\] Authorize service ([0-9a-fA-F\-]+) \(yes/no\):',
-                    r'\[NEW\] Device ([0-9A-Fa-f:]+) (.+)',
-                    r'\[CHG\] Device ([0-9A-Fa-f:]+) Connected: yes',
-                    r'\[CHG\] Device ([0-9A-Fa-f:]+) Paired: yes',
-                    r'Failed to pair:',
-                    r'Failed to connect:',
-                    pexpect.TIMEOUT,
-                    pexpect.EOF
-                ], timeout=timeout)
+            while time.time() - start_time < timeout:
+                try:
+                    i = child.expect([
+                        r'\[agent\] Confirm passkey (\d+) \(yes/no\):',
+                        r'\[agent\] Authorize service ([0-9a-fA-F\-]+) \(yes/no\):',
+                        r'\[NEW\] Device ([0-9A-Fa-f:]+) (.+)',
+                        # Look for 'Paired: yes'
+                        r'(?:\[CHG\] )?Device ([0-9A-Fa-f:]+) Paired: (?:yes|Yes|YES)',
+                        # Look for 'Transport ... State: active' for connection
+                        r'\[CHG\] Transport /org/bluez/hci0/dev_([0-9A-Fa-f_]+)/fd\d+ State: active',
+                        r'Failed to pair:',
+                        r'Failed to connect:',
+                        pexpect.EOF
+                    ], timeout=5)
+
+                except pexpect.exceptions.TIMEOUT:
+                    # Proactive check for connection status, especially after pairing
+                    if newly_paired_mac:
+                        print(
+                            f"[Bluetooth] (DEBUG) No pattern match in 5s. Checking status for newly paired device {newly_paired_mac}...")
+                        try:
+                            info_output = self._run_command(f"bluetoothctl info {self._btctlformat(newly_paired_mac)}")
+                            print(f"[Bluetooth] (DEBUG) `bluetoothctl info` output for {newly_paired_mac}")
+                            if "Connected: yes" in info_output or "State: active" in info_output:
+                                print(
+                                    f"[Bluetooth] (DEBUG) `bluetoothctl info` confirms {newly_paired_mac} is now Connected/Active. Proceeding.")
+                                current_connected_mac = newly_paired_mac
+
+                                print(f"[Bluetooth] Verifying A2DP sink input for {current_connected_mac}...")
+                                for _ in range(5):
+                                    time.sleep(1)
+                                    sink_info = self.get_bluetooth_sink_input_info(current_connected_mac)
+                                    if sink_info:
+                                        print(
+                                            f"[Bluetooth] A2DP sink input active for {current_connected_mac}. Ready to stream.")
+                                        phone_name = self._get_device_name_from_bluetoothctl_info(
+                                            current_connected_mac) or \
+                                                     sink_info.get('media_name',
+                                                                   f"Unknown Device ({current_connected_mac})")
+                                        self._dynamic_update_known_phones_list(phone_name, current_connected_mac)
+                                        if len(self.phones) <= 1:
+                                            self.make_default(current_connected_mac)
+                                            print(f"[Bluetooth] Default phone set to {current_connected_mac}.")
+                                        connected_mac_result = current_connected_mac
+                                        break
+
+                                if connected_mac_result:
+                                    break
+                                else:
+                                    print(
+                                        f"[Bluetooth] (DEBUG) Connected/Active, but A2DP sink input did not activate. Continuing loop.")
+                            else:
+                                print(
+                                    f"[Bluetooth] (DEBUG) `bluetoothctl info` for {newly_paired_mac} still shows not connected. Waiting...")
+                        except Exception as e:
+                            print(f"[Bluetooth] (DEBUG) Error checking info for {newly_paired_mac}: {e}")
+                    time.sleep(0.5)
+                    continue
+
+                except pexpect.exceptions.EOF:
+                    print("[Bluetooth] bluetoothctl exited unexpectedly (EOF).")
+                    break
 
                 if i == 0:  # Confirm passkey
                     passkey = child.match.group(1)
@@ -285,66 +471,60 @@ class Functions:
                     new_mac = child.match.group(1)
                     new_name = child.match.group(2)
                     print(f"[Bluetooth] Found device: {new_name} ({new_mac})")
-                elif i == 3:  # Device connected!
-                    current_connected_mac = child.match.group(1)
-                    current_connected_name = child.match.group(2)
-                    print(f"[Bluetooth] Device {current_connected_mac} Connected: yes")
-
-                    if current_connected_mac == newly_paired_mac:
-                        print(f"[Bluetooth] Newly paired device {current_connected_mac} connected. Trusting...")
-                        child.sendline(f'trust {current_connected_mac}')
-                        try:
-                            child.expect(f'Changing {current_connected_mac} trusted: yes', timeout=10)
-                            print(f"[Bluetooth] Device {current_connected_mac} trusted.")
-                        except pexpect.TIMEOUT:
-                            print(
-                                f"[Bluetooth] Timeout waiting for trust confirmation for {current_connected_mac}. Continuing anyway.")
-                        except Exception as trust_e:
-                            print(f"[Bluetooth] Error during trust operation for {current_connected_mac}: {trust_e}")
-                        finally:
-                            print("Adding device to known devices list...")
-                            self._add_phone_to_phones(current_connected_name, current_connected_mac, dt.now(), False)
-                            print("Focusing phone...")
-                            self.focus_phone_via_mac(current_connected_mac)
-                            if len(self.phones) <= 1:
-                                print("First phone connected. Setting as default.")
-                                self.set_default_phone()
-                    else:
-                        # Check if already trusted. If not, try to trust for future auto-connections
-                        try:
-                            info_output = self._run_command(f"bluetoothctl info {current_connected_mac}")
-                            if "Trusted: yes" not in info_output:
-                                print(
-                                    f"[Bluetooth] Device {current_connected_mac} connected but not trusted. Trusting now...")
-                                child.sendline(f'trust {current_connected_mac}')
-                                child.expect(f'Changing {current_connected_mac} trusted: yes', timeout=10)
-                                print(f"[Bluetooth] Device {current_connected_mac} trusted.")
-                        except Exception as e:
-                            print(f"[Bluetooth] Could not check/set trust status for {current_connected_mac}: {e}")
-                        finally:
-                            print("Focusing phone...")
-                            self.focus_phone_via_mac(current_connected_mac)
-
-                    # Verify PipeWire sink input is active for the connected device
-                    print(f"[Bluetooth] Verifying A2DP sink input for {current_connected_mac}...")
-                    for _ in range(5):  # Check up to 5 times (5 seconds)
-                        time.sleep(1)
-                        if self.get_bluetooth_sink_input_info(current_connected_mac):
-                            print(f"[Bluetooth] A2DP sink input active for {current_connected_mac}. Ready to stream.")
-                            connected_mac_result = current_connected_mac  # Store result
-                            break  # Break out of stream verification loop
-
-                    if connected_mac_result:  # If stream was successfully verified
-                        break  # Break out of the main while True loop (connection found)
-                    else:
-                        print(
-                            f"[Bluetooth] Device {current_connected_mac} connected, but A2DP sink input did not activate. Will continue listening.")
-                        # Do not set connected_mac_result, let loop continue
-
-                elif i == 4:  # Device just paired
+                    # Add to known list immediately, but not as default unless it connects
+                    self._dynamic_update_known_phones_list(new_name, new_mac)
+                elif i == 3:  # Device just paired (Now with flexible regex)
                     paired_mac = child.match.group(1)
                     print(f"[Bluetooth] Device {paired_mac} Paired: yes")
-                    newly_paired_mac = paired_mac  # Mark as newly paired. Trust will happen on connection.
+                    newly_paired_mac = paired_mac
+
+                    # Ensure it's in our known list and update its name if available
+                    phone_name = self._get_device_name_from_bluetoothctl_info(
+                        paired_mac) or f"Unknown Device ({paired_mac})"
+                    self._dynamic_update_known_phones_list(phone_name, paired_mac)  # Add or update, but don't set default yet
+
+                    # After pairing, trust the device immediately
+                    print(f"[Bluetooth] Device {paired_mac} paired. Trusting...")
+                    child.sendline(f'trust {self._btctlformat(paired_mac)}')
+                    print(f'[Bluetooth] Sent command: trust {self._btctlformat(paired_mac)}')
+                    try:
+                        child.expect(f'Changing {self._btctlformat(paired_mac)} trusted: yes', timeout=10)
+                        print(f"[Bluetooth] Device {paired_mac} trusted.")
+                    except pexpect.TIMEOUT:
+                        print(
+                            f"[Bluetooth] Timeout waiting for trust confirmation for {paired_mac}. Continuing anyway.")
+                    except Exception as trust_e:
+                        print(f"[Bluetooth] Error during trust operation for {paired_mac}: {trust_e}")
+
+                elif i == 4:  # Transport State: active (This is our new connection indicator)
+                    connected_mac_underscores = child.match.group(1)
+                    current_connected_mac = connected_mac_underscores.replace('_', ':')
+                    print(f"[Bluetooth] Transport for {current_connected_mac} is now active. Audio stream established.")
+
+                    print(f"[Bluetooth] Verifying A2DP sink input for {current_connected_mac}...")
+                    for _ in range(5):
+                        time.sleep(1)
+                        sink_info = self.get_bluetooth_sink_input_info(current_connected_mac)
+                        if sink_info:
+                            print(f"[Bluetooth] A2DP sink input active for {current_connected_mac}. Ready to stream.")
+                            phone_name = self._get_device_name_from_bluetoothctl_info(current_connected_mac) or \
+                                         sink_info.get('media_name', f"Unknown Device ({current_connected_mac})")
+
+                            self._dynamic_update_known_phones_list(phone_name,
+                                                                   current_connected_mac)
+
+                            if len(self.phones) <= 1:
+                                self.make_default(current_connected_mac)
+
+                            connected_mac_result = current_connected_mac
+                            break
+
+                    if connected_mac_result:
+                        break
+                    else:
+                        print(
+                            f"[Bluetooth] Device {current_connected_mac} audio transport active, but A2DP sink input did not activate. Will continue listening.")
+
                 elif i == 5:  # Failed to pair
                     error_msg = child.match.group(0)
                     print(f"[Bluetooth] Pairing failed: {error_msg}")
@@ -352,7 +532,7 @@ class Functions:
                     if mac_in_error:
                         failed_mac = mac_in_error.group(1)
                         print(f"[Bluetooth] Attempting to remove failed device {failed_mac} to allow retry.")
-                        child.sendline(f'remove {failed_mac}')
+                        child.sendline(f'remove {self._btctlformat(failed_mac)}')
                         try:
                             child.expect('Device has been removed', timeout=5)
                         except pexpect.TIMEOUT:
@@ -365,35 +545,66 @@ class Functions:
                     error_msg = child.match.group(0)
                     print(f"[Bluetooth] Connection failed: {error_msg}")
                     time.sleep(1)
-                elif i == 7:  # Timeout
-                    print(f"[Bluetooth] Timeout ({timeout}s) reached while waiting for connection.")
-                    break  # Break out of the main while True loop
-                elif i == 8:  # EOF - bluetoothctl exited unexpectedly
-                    print("[Bluetooth] bluetoothctl exited unexpectedly.")
-                    break  # Break out of the main while True loop
 
-        except pexpect.exceptions.TIMEOUT:
-            print("[Bluetooth] Pexpect operation timed out during an expect call.")
-        except pexpect.exceptions.EOF:
-            print("[Bluetooth] bluetoothctl session ended unexpectedly (EOF).")
+            if time.time() - start_time >= timeout and connected_mac_result is None:
+                print(
+                    f"[Bluetooth] Overall timeout ({timeout}s) reached while waiting for connection. No device connected.")
+
         except Exception as e:
-            print(f"[Bluetooth] An unexpected error occurred: {e}")
+            print(f"[Bluetooth] An unexpected error occurred in make_discoverable_and_listen: {e}")
         finally:
-            if child and child.isalive():  # Ensure child process is still alive before sending quit
+            if child and child.isalive():
                 child.sendline('quit')
                 try:
-                    child.expect(pexpect.EOF, timeout=5)  # Wait for it to close
+                    child.expect(pexpect.EOF, timeout=5)
                 except pexpect.TIMEOUT:
                     print("[Bluetooth] Timeout waiting for bluetoothctl to quit.")
-                child.close()  # Explicitly close the pexpect process
+                child.close()
                 print("[Bluetooth] bluetoothctl session closed.")
             elif child:
-                # If child exited already (e.g., due to EOF match), just close it if needed
                 child.close()
 
-        # This return happens ONLY if the try block broke out or an exception occurred
-        # and 'connected_mac_result' was not set by a successful stream detection.
         return connected_mac_result
 
+    def focus_phone(self, mac):
+        mac = self._normalize_mac(mac)
+        if not mac:
+            print("Error: No target MAC address specified for focus_phone.")
+            return False
+        macs = [phone.mac for phone in self.phones]
+        if mac not in macs:
+            print(f"Error: Target MAC address {mac} not found in known phones.")
+            return False
 
+        self.focused_phone = next((phont for phont in self.phones if phont.mac == mac), None)
+        assert self.focused_phone is not None and self.focused_phone.mac == mac
+        return True
+
+    def send_media_command(self, command):
+        tmac = self._bluezformat(self.focused_phone.mac)
+        if not tmac:
+            print("Error: No target MAC address specified for send_media_command.")
+            return False
+        recognized = ["play", "pause", "stop", "next", "previous"]
+        cmd = command.lower().capitalize() if command.lower() in recognized else None
+        try:
+            result = self._run_command(
+                f"dbus-send --system --dest=org.bluez --print-reply "
+                f"/org/bluez/hci0/dev_{tmac}/player0 "
+                f"org.bluez.MediaPlayer1.{command.capitalize()} "
+            )
+            return result
+        except RuntimeError:
+            return False
+
+    @staticmethod
+    def fetch_album_art(title, artist):
+        query = f"{title} {artist}"
+        url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&media=music&limit=1"
+        response = requests.get(url)
+        data = response.json()
+
+        if data["resultCount"] > 0:
+            return data["results"][0]["artworkUrl100"].replace("100x100bb", "500x500bb")  # higher res
+        return None
 
