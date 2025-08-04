@@ -33,55 +33,8 @@ class HomeWindow(QWidget):
                                           mac="DC5285E30AB6")  # only because of debug purposes.
         self.f = Functions()
 
-        self.ui.nextButton.installEventFilter(self)
-        self.ui.prevButton.installEventFilter(self)
-        self.last_click_time = 0
-        self.holding = False
-        self.hold_timer = QTimer()
-        self.hold_timer.setInterval(500)
-        self.hold_timer.timeout.connect(self.on_hold_trigger)
-        self.held_button = None
-        self.save_song_title = ""
-
-    def eventFilter(self, source, event):
-        if event.type() == event.MouseButtonPress:
-            now = time.time()
-            double_click = (now - self.last_click_time) < 0.4
-            self.last_click_time = now
-
-            self.held_button = source
-            self.holding = True
-            if double_click:
-                self.hold_timer.start()
-            return True
-
-        elif event.type() == event.MouseButtonRelease:
-            self.hold_timer.stop()
-            if self.holding:
-                self.holding = False
-                if self.held_button:
-                    if self.held_button == self.ui.nextButton:
-                        self.f.send_media_command("Next")  # single click fallback
-                    elif self.held_button == self.ui.prevButton:
-                        self.f.send_media_command("Previous")
-                    self.held_button = None
-                self.f.send_media_command("Play")  # stop FF/REW
-                self.ui.trackTitle.setText(self.save_song_title)
-            return True
-        return False
-
-    def on_hold_trigger(self):
-        self.hold_timer.stop()
-        if self.held_button == self.ui.nextButton:
-            print("🔁 Fast Forward")
-            self.f.send_media_command("FastForward")
-            self.save_song_title = self.ui.trackTitle.text()
-            self.ui.trackTitle.setText("Skipping ...")
-        elif self.held_button == self.ui.prevButton:
-            print("🔁 Rewind")
-            self.f.send_media_command("Rewind")
-            self.save_song_title = self.ui.trackTitle.text()
-            self.ui.trackTitle.setText("Rewinding ...")
+        self.ui.nextButton.clicked.connect(self.on_next_clicked)
+        self.ui.prevButton.clicked.connect(self.on_prev_clicked)
 
     def on_track_update(self, data: dict[str, str]):
         """
@@ -95,7 +48,7 @@ class HomeWindow(QWidget):
         self.ui.artistName.setText(data["Artist"])
         self.ui.albumName.setText(data["Album"])
         self.ui.totalTime.setText(str(Pointed(data["Duration"])))
-        self.ui.progressBar.setRange(0, data["Duration"])
+        self.ui.progressBar.setRange(0, int(data["Duration"]))
         url = fetch_album_art_url(data["Title"], data["Artist"], data["Album"])
         response = requests.get(url)
         response.raise_for_status()
@@ -110,6 +63,7 @@ class HomeWindow(QWidget):
         self.status = str(status)
 
     def on_progress_update(self, progress, total):
+        print(f"{progress}//{total}")
         self.ui.elapsedTime.setText(str(Pointed(progress)))
         self.ui.totalTime.setText(str(Pointed(total)))
         self.ui.progressBar.setValue(int(progress))
