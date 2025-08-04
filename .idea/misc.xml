@@ -3,7 +3,7 @@
   <component name="Black">
     <option name="sdkName" value="ARTEPlayer" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.11.2 (sftp://braga@192.168.1.67:22/usr/bin/python3)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="ARTEPlayer" project-jdk-type="Python SDK" />
   <component name="accountSettings">
     <option name="activeRegion" value="us-east-1" />
     <option name="recentlyUsedRegions">

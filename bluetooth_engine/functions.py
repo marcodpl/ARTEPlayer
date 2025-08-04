@@ -1,13 +1,3 @@
-import subprocess
-import time
-import re
-import os
-from datetime import datetime
-import requests
-
-BLUETOOTH_SET_REMOTE_VOLUME_IS_COMPLETED = False
-
-
 """
 Bluetooth functionality implementation for ARTEPlayer.
 Phones are represented by BtPhone objects. They hold name, MAC address, and date added, as well as a flag indicating whether
@@ -27,9 +17,41 @@ Phones: represents a list of phones that are known to the app.
  - they are updated when a phone is removed from the system.
 """
 
+import subprocess
+import time
+import re
+import os
+from datetime import datetime
+import requests
+
+BLUETOOTH_SET_REMOTE_VOLUME_IS_COMPLETED = False
+
+
+def fetch_album_art_url(title, artist, album=""):
+    """
+    Fetches the album art URL from iTunes. Requires an internet connection.
+    :param title: title of the song
+    :param artist: artist of the song
+    :param album: (optional) album of the song for better results
+    :return: pixmap URL of the album art, or None if no album art was found
+    """
+    query = f"{title} {artist} {album}"
+    url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&media=music&limit=1"
+    response = requests.get(url)
+    data = response.json()
+
+    if data["resultCount"] > 0:
+        return data["results"][0]["artworkUrl100"].replace("100x100bb", "500x500bb")  # higher res
+    return None
+
 
 # DEBUG
 def checked(func: callable):
+    """
+    Debug wrapper for functions. Prints errors to console.
+    :param func: target callable
+    :return: whatever func returns, or None if an error occurred
+    """
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -41,8 +63,15 @@ def checked(func: callable):
 
 class BtPhone(object):
     def __init__(self, name, mac, date_added=None, is_default=False):
+        """
+        A class representing a Bluetooth phone.
+        :param name: phone name
+        :param mac: phone physical address, in whatever format it is stored on the phone, e.g. "00:11:22:33:44:55".
+        :param date_added: when phone was first connected to the system, in datetime format.
+        :param is_default: if the phone is the default phone for the system.
+        """
         self.name = name
-        self.mac = mac.replace(':', '').upper()
+        self.mac = mac.replace(':', '').replace("_", "").upper()
         self.date_added = date_added if date_added else datetime.now()
         self.is_default = is_default
         self.__doc__ = self.__repr__.__doc__
@@ -63,7 +92,7 @@ class BtPhone(object):
 class Functions(object):
     def __init__(self):
         print("[INIT]: Initializing functions...")
-        with open(os.getcwd()+"/data/default_mac.txt", "r+") as f:
+        with open(os.path.dirname(os.path.realpath(__file__))+"/data/default_mac.txt", "r+") as f:
             default_phone_mac = f.read().strip()
 
         self.default_phone_mac = self._normalize_mac(default_phone_mac)
@@ -280,7 +309,7 @@ class Functions(object):
         return sink_info is not None
 
     @checked
-    def _get_device_name_from_bluetoothctl_info(self, mac_address):
+    def get_device_name_from_bluetoothctl_info(self, mac_address):
         try:
             btmac = self._btctlformat(mac_address)
             output = self._run_command(f"bluetoothctl info {btmac}")
@@ -429,7 +458,7 @@ class Functions(object):
                                     if sink_info:
                                         print(
                                             f"[Bluetooth] A2DP sink input active for {current_connected_mac}. Ready to stream.")
-                                        phone_name = self._get_device_name_from_bluetoothctl_info(
+                                        phone_name = self.get_device_name_from_bluetoothctl_info(
                                             current_connected_mac) or \
                                                      sink_info.get('media_name',
                                                                    f"Unknown Device ({current_connected_mac})")
@@ -479,7 +508,7 @@ class Functions(object):
                     newly_paired_mac = paired_mac
 
                     # Ensure it's in our known list and update its name if available
-                    phone_name = self._get_device_name_from_bluetoothctl_info(
+                    phone_name = self.get_device_name_from_bluetoothctl_info(
                         paired_mac) or f"Unknown Device ({paired_mac})"
                     self._dynamic_update_known_phones_list(phone_name, paired_mac)  # Add or update, but don't set default yet
 
@@ -507,7 +536,7 @@ class Functions(object):
                         sink_info = self.get_bluetooth_sink_input_info(current_connected_mac)
                         if sink_info:
                             print(f"[Bluetooth] A2DP sink input active for {current_connected_mac}. Ready to stream.")
-                            phone_name = self._get_device_name_from_bluetoothctl_info(current_connected_mac) or \
+                            phone_name = self.get_device_name_from_bluetoothctl_info(current_connected_mac) or \
                                          sink_info.get('media_name', f"Unknown Device ({current_connected_mac})")
 
                             self._dynamic_update_known_phones_list(phone_name,
@@ -582,10 +611,11 @@ class Functions(object):
 
     def send_media_command(self, command):
         tmac = self._bluezformat(self.focused_phone.mac)
+        print("sending {}".format(tmac))
         if not tmac:
             print("Error: No target MAC address specified for send_media_command.")
             return False
-        recognized = ["play", "pause", "stop", "next", "previous"]
+        recognized = ["play", "pause", "stop", "next", "previous", "fastforward", "rewind"]
         cmd = command.lower().capitalize() if command.lower() in recognized else None
         try:
             result = self._run_command(
@@ -597,14 +627,19 @@ class Functions(object):
         except RuntimeError:
             return False
 
-    @staticmethod
-    def fetch_album_art(title, artist):
-        query = f"{title} {artist}"
-        url = f"https://itunes.apple.com/search?term={requests.utils.quote(query)}&media=music&limit=1"
-        response = requests.get(url)
-        data = response.json()
+    def seek_song(self, pos: str | int):
+        pos = int(pos) if isinstance(pos, str) else pos
+        tmac = self._bluezformat(self.focused_phone.mac)
+        print("sending {}".format(tmac))
+        if not tmac:
+            print("Error: No target MAC address specified for seek_song.")
 
-        if data["resultCount"] > 0:
-            return data["results"][0]["artworkUrl100"].replace("100x100bb", "500x500bb")  # higher res
-        return None
-
+        try:
+            result = self._run_command(
+                f"dbus-send --system --dest=org.bluez --print-reply "
+                f"/org/bluez/hci0/dev_{tmac}/player0 "
+                f"org.bluez.MediaPlayer1.Seek int64:{pos}"
+            )
+            return result
+        except RuntimeError:
+            return False
