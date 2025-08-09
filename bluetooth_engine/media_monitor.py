@@ -41,7 +41,7 @@ class MediaMonitor:
                  on_device_disconnected: callable,
                  mac: str = None):
         """
-        Initializes the media monitor. Provides three callbacks: on_track_update, on_status_change, and on_progress_update.
+        Initializes the media monitor. Provides five callbacks: on_track_update, on_status_change, on_progress_update, on_device_connected, on_device_disconnected.
         """
         DBusGMainLoop(set_as_default=True)  # dbus loop, used to add signal receivers
         self.bus = dbus.SystemBus()  # bus reference
@@ -60,8 +60,23 @@ class MediaMonitor:
         self.duration = 0  # holds total duration of song
 
         self._stop = False
-
+        self._check_already_connected_devices()
         self._start_monitor()
+
+    def _check_already_connected_devices(self):
+        managed = dbus.Interface(
+            self.bus.get_object("org.bluez", "/"),
+            "org.freedesktop.DBus.ObjectManager") \
+            .GetManagedObjects()
+        for path, interfaces in managed.items():
+            if "org.bluez.Device1" in interfaces:
+                props = interfaces["org.bluez.Device1"]
+                if props.get("Connected", False):
+                    mac = path.split("/")[-1].replace("_", ":")
+                    self._bluez_mac = _bluez_format(mac)
+                    self.noNeedForMac = False
+                    print("Already connected device: ", mac)
+                    self.on_device_connected(mac)
 
     def _start_monitor(self):
         """
@@ -144,7 +159,7 @@ class MediaMonitor:
             path_keyword="path",
             arg0="org.bluez.Device1"
         )
-        """self.bus.add_signal_receiver(
+        self.bus.add_signal_receiver(
             handler_function=self._maybe_handle_connection,
             signal_name="InterfacesAdded",
             dbus_interface="org.freedesktop.DBus.ObjectManager",
@@ -156,8 +171,12 @@ class MediaMonitor:
             props = interfaces["org.bluez.Device1"]
             if props.get("Connected", False):
                 mac = path.split("/")[-1].replace("_", ":")
+                self._bluez_mac = _bluez_format(mac)
+                self.noNeedForMac = False
                 print("Connection (interfaceAdded): ", mac)
-                self.on_device_connected(self, mac)"""
+                self.on_device_connected(self, mac)
+                self.stop()
+                self._start_monitor()
 
     def _maybe_handle_disconnection(self, interface, changed, invalidated, path=None):
         print(interface, changed, invalidated, path)
@@ -167,8 +186,7 @@ class MediaMonitor:
             mac_path = path.split("/")[-1].replace("_", ":")
             if changed["Connected"]:
                 print(f"🔌 Device connected: {mac_path}")
-                if self.on_device_connected:
-                    self.on_device_connected(mac_path)
+
             else:
                 print(f"❌ Device disconnected: {mac_path}")
                 if self.on_device_disconnected:

@@ -1,15 +1,15 @@
 """
+Author: @bigmarco\n
 Home window class for ARTEPLAYER.
 Loads the UI and handles all the logic.
 Is loaded by MainWindow as part of stacked widget logic.
 TAB BUTTONS should not be touched. They are assigned and implemented by MainWindow for window change.
 """
-
 from io import BytesIO
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QWidget
-from gui_dev.guis.home import Ui_MediaCenterWindow
+from gui_engine.guis.home import Ui_MediaCenterWindow
 import sys
 from bluetooth_engine.functions import *
 from bluetooth_engine.media_monitor import MediaMonitor
@@ -22,8 +22,6 @@ class HomeWindow(QWidget):
         self.ui = Ui_MediaCenterWindow()
         self.ui.setupUi(self)  # Loads the UI assigned, from the guis folder. Initializes it.
         self.ui.playPauseButton.clicked.connect(self.on_play_pause_clicked)  # Assignment of buttons.
-        self.ui.progressBar.sliderMoved.connect(self.is_seeking)
-        self.ui.progressBar.sliderReleased.connect(self.done_seeking)
         self.status = "playing"  # status is used to control MediaMonitor. Defaults on loading to playing.
         self.media_monitor = MediaMonitor(on_track_update=self.on_track_update,
                                           on_status_change=self.on_status_change,
@@ -88,12 +86,5 @@ class HomeWindow(QWidget):
 
     def on_device_disconnected(self):
         self.ui.deviceLabel.setText("Disconnected")
-   
-    def is_seeking(self, pos):
-        self.ui.elapsedTime.setText(str(Pointed(pos)))
 
-    def done_seeking(self):
-        val = self.ui.progressBar.value()
-        self.media_monitor.position = val
-        self.f.seek_song(val)
 

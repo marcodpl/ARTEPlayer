@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PyQt Navigation Map</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+    #searchInput {
+      position: absolute;
+      top: 5%;
+      left: 16.5%;
+      transform: translateX(-50%);
+      width: 30%;
+      height: 30px;
+      padding: 8px;
+      border-radius: 4px;
+      border: 3px solid #ccc;
+      z-index: 999;
+    }
+    #resultsList {
+      position: absolute;
+      top: 15%;
+      left: 16.5%;
+      transform: translateX(-50%);
+      background: white;
+      border: 3px solid #341a75;
+      width: 30%;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      z-index: 999;
+    }
+    #resultsList li {
+      padding: 8px;
+      cursor: pointer;
+    }
+    #resultsList li:hover {
+      background: #c3b2ed;
+    }
+    #navBtn {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 20px;
+      font-size: 16px;
+      background-color: #4285F4;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      display: none;
+      z-index: 999;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <input type="text" id="searchInput" placeholder="Search location...">
+  <ul id="resultsList"></ul>
+  <button id="navBtn">Start Navigation</button>
+
+  <script>
+    let map;
+    let marker;
+    let autocompleteService;
+    let placesService;
+    let destination;
+    let directionsService;
+    let directionsRenderer;
+    let watchId;
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById("map"), {
+        center: { lat: 40.7128, lng: -74.0060 },
+        zoom: 12
+      });
+
+      autocompleteService = new google.maps.places.AutocompleteService();
+      placesService = new google.maps.places.PlacesService(map);
+      directionsService = new google.maps.DirectionsService();
+      directionsRenderer = new google.maps.DirectionsRenderer({ map: map });
+
+      const searchInput = document.getElementById("searchInput");
+      const resultsList = document.getElementById("resultsList");
+      const navBtn = document.getElementById("navBtn");
+
+      searchInput.addEventListener("input", () => {
+        const query = searchInput.value;
+        if (query.length < 3) {
+          resultsList.style.display = "none";
+          resultsList.innerHTML = "";
+          return;
+        }
+
+        autocompleteService.getPlacePredictions({ input: query }, (predictions, status) => {
+          if (status !== google.maps.places.PlacesServiceStatus.OK || !predictions) {
+            resultsList.style.display = "none";
+            return;
+          }
+          resultsList.innerHTML = "";
+          predictions.forEach(pred => {
+            const li = document.createElement("li");
+            li.textContent = pred.description;
+            li.onclick = () => {
+              resultsList.style.display = "none";
+              searchInput.value = pred.description;
+              fetchPlaceDetails(pred.place_id);
+            };
+            resultsList.appendChild(li);
+          });
+          resultsList.style.display = "block";
+        });
+      });
+
+      navBtn.addEventListener("click", () => {
+        if (destination) {
+          if (navigator.geolocation) {
+            // Stop any previous tracking
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+
+            watchId = navigator.geolocation.watchPosition(pos => {
+              const origin = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude
+              };
+              startNavigation(origin, destination)
+            }, err => {
+              alert("Geolocation error: " + err.message);
+            }, {
+              enableHighAccuracy: true,
+              maximumAge: 0
+            });
+          } else {
+            alert("Geolocation not supported");
+          }
+        }
+      });
+    }
+
+    function fetchPlaceDetails(placeId) {
+      placesService.getDetails({ placeId: placeId }, (place, status) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK && place.geometry) {
+          const loc = place.geometry.location;
+          map.setCenter(loc);
+          map.setZoom(15);
+
+          if (marker) marker.setMap(null);
+          marker = new google.maps.Marker({
+            position: loc,
+            map: map
+          });
+
+          destination = { lat: loc.lat(), lng: loc.lng() };
+          document.getElementById("navBtn").style.display = "block";
+        }
+      });
+    }
+
+    function startNavigation(origin, destination) {
+      directionsService.route(
+        {
+          origin: origin,
+          destination: destination,
+          travelMode: google.maps.TravelMode.DRIVING
+        },
+        (result, status) => {
+          if (status === google.maps.DirectionsStatus.OK) {
+            directionsRenderer.setDirections(result);
+          } else {
+            console.error("Directions request failed:", status);
+          }
+        }
+      );
+    }
+  </script>
+
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBVGjXXd-zvxJW5mEug3pTKxriYIEWhY00&libraries=places&callback=initMap" async defer></script>
+</body>
+</html>
