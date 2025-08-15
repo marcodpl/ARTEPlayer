@@ -28,7 +28,7 @@ class Ui_MapWindow(object):
         self.mapView = QtWebEngineWidgets.QWebEngineView(MapWindow)
         self.mapView.load(QtCore.QUrl.fromLocalFile(
             os.path.join(
-                f"{os.path.dirname(__file__)}\\..\\..\\maps_engine",
+                f"{os.path.dirname(__file__)}/../../maps_engine",
                 "maps_html.html"
             )
         ))

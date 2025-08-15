@@ -73,7 +73,9 @@ class MediaMonitor:
                 props = interfaces["org.bluez.Device1"]
                 if props.get("Connected", False):
                     mac = path.split("/")[-1].replace("_", ":")
-                    self._bluez_mac = _bluez_format(mac)
+                    print(f"{mac} of {path}")
+                    self._bluez_mac = path.split("/")[-1]
+                    print(f"{self._bluez_mac}")
                     self.noNeedForMac = False
                     print("Already connected device: ", mac)
                     self.on_device_connected(mac)
@@ -82,6 +84,7 @@ class MediaMonitor:
         """
         Starts listening to dbus signals.
         """
+        print(f"searching dbus to conn {self.noNeedForMac} {self._bluez_mac}")
         manager = dbus.Interface(
             self.bus.get_object("org.bluez", "/"),
             "org.freedesktop.DBus.ObjectManager"

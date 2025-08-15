@@ -23,13 +23,13 @@ class HomeWindow(QWidget):
         self.ui.setupUi(self)  # Loads the UI assigned, from the guis folder. Initializes it.
         self.ui.playPauseButton.clicked.connect(self.on_play_pause_clicked)  # Assignment of buttons.
         self.status = "playing"  # status is used to control MediaMonitor. Defaults on loading to playing.
+        self.f = Functions()
         self.media_monitor = MediaMonitor(on_track_update=self.on_track_update,
                                           on_status_change=self.on_status_change,
                                           on_progress_update=self.on_progress_update,
                                           on_device_connected=self.on_device_connected,
                                           on_device_disconnected=self.on_device_disconnected,
                                           mac="DC5285E30AB6")  # only because of debug purposes.
-        self.f = Functions()
 
         self.ui.nextButton.clicked.connect(self.on_next_clicked)
         self.ui.prevButton.clicked.connect(self.on_prev_clicked)
@@ -80,7 +80,7 @@ class HomeWindow(QWidget):
         self.f.send_media_command("next")
 
     def on_device_connected(self, mac_path):
-        print("connected: {}".format(mac_path))
+        print("ondevcon, home: connected: {}".format(mac_path))
         name = self.f.get_device_name_from_bluetoothctl_info(mac_path)
         self.ui.deviceLabel.setText(name)
 
